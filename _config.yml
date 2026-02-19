@@ -1,4 +1,4 @@
 title: Setup macOS (Zscaler + CrowdStrike)
 description: Documentation interne pour permettre le dev sous macOS avec les contraintes securite.
-theme: minima
+theme: jekyll-theme-cayman
 markdown: kramdown
