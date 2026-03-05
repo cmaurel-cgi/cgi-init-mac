@@ -14,6 +14,7 @@ Guide pour faire fonctionner un environnement front/mobile derriere Zscaler sur 
 - [4. Fix SSL Gradle et Java (PKIX)](#4-fix-ssl-gradle-et-java-pkix)
 - [5. Verification et nettoyage](#5-verification-et-nettoyage)
 - [6. Depannage rapide](#6-depannage-rapide)
+- [7. Expo Android : cert Zscaler dans l'emulateur](#7-expo-android--cert-zscaler-dans-lemulateur)
 
 ---
 
@@ -240,3 +241,172 @@ Si tu veux un truststore dedie plutot que de modifier `cacerts`, cree `~/certs/z
 ```properties
 org.gradle.jvmargs=-Djavax.net.ssl.trustStore=$HOME/certs/zscaler.jks -Djavax.net.ssl.trustStorePassword=zscalerpass
 ```
+
+---
+
+## 7. Expo Android : cert Zscaler dans l'emulateur
+
+Cette section couvre le cas React Native/Expo pour :
+- autoriser le cleartext vers des IP de dev locales
+- faire confiance aux certificats utilisateur sur Android
+- importer le certificat Zscaler dans l'emulateur, comme sur iOS
+
+### 7.1 Ajouter le plugin dans `app.config.json`
+
+Dans la section `expo.plugins`, ajouter :
+
+```json
+[
+  "./plugins/withNetworkSecurityConfig.js",
+  {
+    "cleartextIps": ["127.0.0.1", "192.168.1.112", "localhost"]
+  }
+]
+```
+
+Exemple d'integration :
+
+```json
+{
+  "expo": {
+    "plugins": [
+      [
+        "./plugins/withNetworkSecurityConfig.js",
+        {
+          "cleartextIps": ["127.0.0.1", "192.168.1.112", "localhost"]
+        }
+      ]
+    ]
+  }
+}
+```
+
+### 7.2 Ajouter le dossier et le fichier plugin
+
+Creer ce dossier dans le projet mobile :
+
+```
+plugins/
+  withNetworkSecurityConfig.js
+```
+
+Contenu de `plugins/withNetworkSecurityConfig.js` :
+
+```js
+const { withAndroidManifest } = require('@expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Expo plugin to add network security config for:
+ * 1. Trusting user certificates (like Zscaler) in debug builds
+ * 2. Allowing cleartext traffic to specific IPs (for local development)
+ *
+ * @param {object} config - Expo config
+ * @param {object} props - Plugin configuration
+ * @param {string[]} props.cleartextIps - Array of IPs to allow cleartext traffic
+ */
+module.exports = function withNetworkSecurityConfig(config, props = {}) {
+  return withAndroidManifest(config, async (configWithManifest) => {
+    const androidManifest = configWithManifest.modResults;
+
+    const mainApplication = androidManifest.manifest.application[0];
+    mainApplication.$['android:networkSecurityConfig'] = '@xml/network_security_config';
+
+    const projectRoot = configWithManifest.modRequest.projectRoot;
+    const resXmlDir = path.join(
+      projectRoot,
+      'android',
+      'app',
+      'src',
+      'main',
+      'res',
+      'xml'
+    );
+
+    if (!fs.existsSync(resXmlDir)) {
+      fs.mkdirSync(resXmlDir, { recursive: true });
+    }
+
+    const networkSecurityConfigPath = path.join(resXmlDir, 'network_security_config.xml');
+
+    const cleartextIps = props.cleartextIps || ['127.0.0.1', 'localhost'];
+    const ipDomains = cleartextIps
+      .filter((ip) => ip && ip.length > 0)
+      .map((ip) => `        <domain includeSubdomains="true">${ip}</domain>`)
+      .join('\n');
+
+    const networkSecurityConfig = `<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+${ipDomains}
+    </domain-config>
+
+    <base-config>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
+`;
+
+    fs.writeFileSync(networkSecurityConfigPath, networkSecurityConfig);
+
+    return configWithManifest;
+  });
+};
+```
+
+### 7.3 Regenerer le projet Android
+
+Apres ajout/modification du plugin :
+
+```bash
+npx expo prebuild -p android --clean
+```
+
+Puis lancer l'app :
+
+```bash
+npx expo run:android
+```
+
+### 7.4 Importer le certificat dans l'emulateur Android (meme logique que iOS)
+
+1. Placer le certificat dans un dossier simple :
+
+```bash
+$HOME/certs/zscaler.pem
+```
+
+2. Lancer un serveur HTTP local :
+
+```bash
+cd $HOME/certs
+python3 -m http.server 8000
+```
+
+3. Recuperer l'IP locale du Mac :
+
+```bash
+ipconfig getifaddr en0
+```
+
+4. Dans le navigateur de l'emulateur Android, ouvrir :
+
+```
+http://<ip-du-mac>:8000/zscaler.pem
+```
+
+5. Installer le certificat dans Android :
+- Ouvrir `Settings > Security & privacy > Encryption & credentials > Install a certificate`
+- Choisir `CA certificate`
+- Selectionner le fichier telecharge
+
+### 7.5 Verification
+
+- Relancer l'application dans l'emulateur.
+- Verifier qu'un appel HTTPS vers votre API ne remonte plus d'erreur SSL.
+- En debug, les IP declarees dans `cleartextIps` sont autorisees pour le cleartext.
